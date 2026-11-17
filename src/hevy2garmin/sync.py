@@ -405,6 +405,18 @@ def sync_one_workout(
     merge_activity_types = set(cfg.get("merge_activity_types", ["strength_training"]))
     merge_watch_strategy = cfg.get("merge_watch_strategy", "merge")
     merge_preserve_watch_timing = cfg.get("merge_preserve_watch_timing", True)
+    
+logger.info(
+    "Merge config: enabled=%s, activity_types=%s, overlap=%.0f%%, "
+    "max_drift=%s min, watch_strategy=%s, preserve_watch_timing=%s",
+    merge_mode,
+    sorted(merge_activity_types),
+    merge_overlap_pct * 100,
+    merge_max_drift_min,
+    merge_watch_strategy,
+    merge_preserve_watch_timing,
+)
+
     description_enabled = cfg.get("description_enabled", True)
     hr_fusion_on = cfg.get("hr_fusion", {}).get("enabled", True)
 
