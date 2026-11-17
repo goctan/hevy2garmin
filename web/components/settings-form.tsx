@@ -173,6 +173,25 @@ export function SettingsForm(p: Props) {
         setError(data.error ?? `Request failed (${res.status}).`);
         return;
       }
+            // Configure GitHub Actions after saving settings.
+      if (autoSync && !p.serverSchedule) {
+        const setupRes = await fetch(withBasePath("/api/setup-actions"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ interval }),
+        });
+
+        const setupData = await setupRes.json().catch(() => ({}));
+
+        if (!setupRes.ok || !setupData.ok) {
+          setError(
+            setupData.message ??
+            `Auto-sync setup failed (${setupRes.status}). Settings were saved, but GitHub Actions could not be configured.`
+          );
+          return;
+        }
+      }
+
       setSaved(true);
       router.refresh();
     } catch (err) {
