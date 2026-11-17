@@ -313,7 +313,7 @@ def upload_image(
 
 
 
-      
+
 def find_matching_garmin_activity(
     client: Garmin,
     hevy_workout: dict,
@@ -470,8 +470,7 @@ def find_matching_garmin_activity(
             continue
 
         drift_s = abs(
-            act_start.replace(tzinfo=timezone.utc) -
-            hevy_start.replace(tzinfo=timezone.utc)
+            act_start.replace(tzinfo=timezone.utc) - hevy_start.replace(tzinfo=timezone.utc)
         ).total_seconds()
 
         drift_min = drift_s / 60
