@@ -312,8 +312,6 @@ def upload_image(
     logger.info("  Image uploaded (%dKB)", len(image_bytes) // 1024)
 
 
-
-
 def find_matching_garmin_activity(
     client: Garmin,
     hevy_workout: dict,
