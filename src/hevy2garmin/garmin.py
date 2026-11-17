@@ -393,8 +393,8 @@ def find_matching_garmin_activity(
         act_duration = act.get("duration", 0)
 
         logger.info(
-            "Garmin candidate: id=%s, type=%s, manufacturer=%s, "
-            "start=%s, duration=%s sec",
+            "Garmin candidate: id=%s, type=%s, manufacturer=%s, start=%s, "
+            "duration=%s sec",
             act_id,
             act_type,
             manufacturer,
@@ -471,11 +471,9 @@ def find_matching_garmin_activity(
             continue
 
         drift_s = abs(
-            (
-                act_start.replace(tzinfo=timezone.utc)
-                - hevy_start.replace(tzinfo=timezone.utc)
-            ).total_seconds()
-        )
+            act_start.replace(tzinfo=timezone.utc)
+            - hevy_start.replace(tzinfo=timezone.utc)
+        ).total_seconds()
 
         drift_min = drift_s / 60
 
@@ -509,9 +507,7 @@ def find_matching_garmin_activity(
             best_score,
         )
     else:
-        logger.warning(
-            "No matching Garmin activity found for Hevy workout"
-        )
+        logger.warning("No matching Garmin activity found for Hevy workout")
 
     return best
 
