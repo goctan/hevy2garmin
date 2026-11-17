@@ -312,6 +312,8 @@ def upload_image(
     logger.info("  Image uploaded (%dKB)", len(image_bytes) // 1024)
 
 
+
+      
 def find_matching_garmin_activity(
     client: Garmin,
     hevy_workout: dict,
@@ -325,108 +327,192 @@ def find_matching_garmin_activity(
     then scores by temporal overlap and start-time proximity.
 
     Returns the best-matching activity dict, or None if nothing qualifies.
-    Only matches completed activities whose ``activityType.typeKey`` is in
-    ``activity_types`` (default: ``{"strength_training"}``). Pass additional
-    types (e.g. ``"bouldering"``, ``"indoor_climbing"``) to also enhance
-    non-strength watch activities with Hevy exercise data.
     """
     if activity_types is None:
         activity_types = {"strength_training"}
+
     from datetime import datetime, timedelta, timezone
 
     start_raw = hevy_workout.get("start_time") or hevy_workout.get("startTime", "")
     end_raw = hevy_workout.get("end_time") or hevy_workout.get("endTime", "")
+
     if not start_raw or not end_raw:
+        logger.warning("Merge rejected: Hevy workout has no start/end time")
         return None
 
     try:
         hevy_start = parse_iso(start_raw)
         hevy_end = parse_iso(end_raw)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as e:
+        logger.warning("Merge rejected: invalid Hevy timestamps: %s", e)
         return None
 
     hevy_duration = (hevy_end - hevy_start).total_seconds()
+
     if hevy_duration <= 0:
+        logger.warning("Merge rejected: invalid Hevy duration: %s", hevy_duration)
         return None
 
-    # Query activities in a window around the workout
+    logger.info(
+        "Searching Garmin match: Hevy start=%s, end=%s, duration=%.0fs, "
+        "allowed_types=%s, min_overlap=%.0f%%, max_drift=%s min",
+        start_raw,
+        end_raw,
+        hevy_duration,
+        sorted(activity_types),
+        overlap_threshold * 100,
+        max_drift_minutes,
+    )
+
     search_start = (hevy_start - timedelta(hours=2)).date().isoformat()
     search_end = (hevy_end + timedelta(hours=2)).date().isoformat()
+
     try:
-        activities = _limiter.call(client.get_activities_by_date, search_start, search_end)
-    except Exception as e:  # noqa: BLE001  # the Garmin client raises many types; merge falls back
+        activities = _limiter.call(
+            client.get_activities_by_date,
+            search_start,
+            search_end,
+        )
+    except Exception as e:
         logger.warning("Could not query Garmin activities for merge: %s", e)
         return None
+
+    logger.info(
+        "Garmin returned %d activities for merge search",
+        len(activities or []),
+    )
 
     best_score = 0.0
     best: dict | None = None
 
     for act in activities or []:
-        # Hard filter: only configured activity types are eligible for merge
-        act_type = act.get("activityType", {}).get("typeKey", "")
-        if act_type not in activity_types:
-            continue
-
-        # Must be a completed activity (has duration)
-        act_duration = act.get("duration", 0)
-        if not act_duration or act_duration <= 0:
-            continue
-
-        # Parse start time
+        act_type = (act.get("activityType") or {}).get("typeKey", "")
+        act_id = act.get("activityId")
+        manufacturer = act.get("manufacturer")
         act_start_str = act.get("startTimeGMT") or act.get("startTimeLocal", "")
+        act_duration = act.get("duration", 0)
+
+        logger.info(
+            "Garmin candidate: id=%s, type=%s, manufacturer=%s, "
+            "start=%s, duration=%s sec",
+            act_id,
+            act_type,
+            manufacturer,
+            act_start_str,
+            act_duration,
+        )
+
+        if act_type not in activity_types:
+            logger.info(
+                "Candidate %s rejected: type '%s' not in %s",
+                act_id,
+                act_type,
+                sorted(activity_types),
+            )
+            continue
+
+        if not act_duration or act_duration <= 0:
+            logger.info(
+                "Candidate %s rejected: missing or invalid duration",
+                act_id,
+            )
+            continue
+
         try:
             if "T" not in act_start_str:
                 act_start_str = act_start_str.replace(" ", "T")
+
             act_start = parse_iso(act_start_str)
+
             if act_start.tzinfo is None:
                 act_start = act_start.replace(tzinfo=timezone.utc)
-        except (ValueError, TypeError):
+
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.info(
+                "Candidate %s rejected: invalid start time (%s)",
+                act_id,
+                e,
+            )
             continue
 
         act_end = act_start + timedelta(seconds=act_duration)
 
-        # Check: activity must be finished. Garmin only sets duration > 0
-        # once the activity is saved/stopped. We also reject activities whose
-        # end time is more than 5 minutes into the future (clock skew margin).
         if act_end > datetime.now(timezone.utc) + timedelta(minutes=5):
+            logger.info(
+                "Candidate %s rejected: activity appears unfinished",
+                act_id,
+            )
             continue
 
-        # Compute temporal overlap
         overlap_start = max(
-            hevy_start.replace(tzinfo=timezone.utc), act_start.replace(tzinfo=timezone.utc)
+            hevy_start.replace(tzinfo=timezone.utc),
+            act_start.replace(tzinfo=timezone.utc),
         )
+
         overlap_end = min(
-            hevy_end.replace(tzinfo=timezone.utc), act_end.replace(tzinfo=timezone.utc)
+            hevy_end.replace(tzinfo=timezone.utc),
+            act_end.replace(tzinfo=timezone.utc),
         )
-        overlap_s = max(0.0, (overlap_end - overlap_start).total_seconds())
+
+        overlap_s = max(
+            0.0,
+            (overlap_end - overlap_start).total_seconds(),
+        )
+
         overlap_pct = overlap_s / hevy_duration
 
         if overlap_pct < overlap_threshold:
+            logger.info(
+                "Candidate %s rejected: overlap %.1f%% < required %.1f%%",
+                act_id,
+                overlap_pct * 100,
+                overlap_threshold * 100,
+            )
             continue
 
-        # Check start drift
         drift_s = abs(
             (
-                act_start.replace(tzinfo=timezone.utc) - hevy_start.replace(tzinfo=timezone.utc)
+                act_start.replace(tzinfo=timezone.utc)
+                - hevy_start.replace(tzinfo=timezone.utc)
             ).total_seconds()
         )
+
         drift_min = drift_s / 60
+
         if drift_min > max_drift_minutes:
+            logger.info(
+                "Candidate %s rejected: start drift %.1f min > maximum %s min",
+                act_id,
+                drift_min,
+                max_drift_minutes,
+            )
             continue
 
-        # Score: overlap dominates, drift is a small penalty
         score = (overlap_pct * 100) - (drift_min * 0.5)
+
+        logger.info(
+            "Candidate %s accepted: overlap=%.1f%%, drift=%.1f min, score=%.1f",
+            act_id,
+            overlap_pct * 100,
+            drift_min,
+            score,
+        )
+
         if score > best_score:
             best_score = score
             best = act
 
     if best:
         logger.info(
-            "Merge match: Garmin activity %s (overlap %.0f%%, drift %.1fmin)",
+            "Merge match found: Garmin activity %s, score=%.1f",
             best.get("activityId"),
             best_score,
-            0,
         )
+    else:
+        logger.warning(
+            "No matching Garmin activity found for Hevy workout"
+        )
+
     return best
 
 
