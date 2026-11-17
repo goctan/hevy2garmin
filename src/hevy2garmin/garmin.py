@@ -373,7 +373,7 @@ def find_matching_garmin_activity(
             search_start,
             search_end,
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # Garmin lookup is best-effort; failure means no merge
         logger.warning("Could not query Garmin activities for merge: %s", e)
         return None
 
