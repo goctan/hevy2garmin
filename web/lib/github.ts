@@ -1,3 +1,4 @@
+
 /**
  * GitHub integration for auto-sync on a fork (port of the Python dashboard's
  * get_github_pat / _setup_github_actions / _build_sync_workflow_yaml, #458).
@@ -127,48 +128,149 @@ export async function setupGithubActions(opts: { pat: string; repo: string; data
   const interval = opts.intervalMinutes ?? 120;
   const { pat, repo, databaseUrl } = opts;
   const f = opts.fetchImpl ?? fetch;
-  const call = (path: string, init: RequestInit = {}) => f(`https://api.github.com/repos/${repo}${path ? `/${path}` : ""}`, {
-    ...init, headers: { Authorization: `Bearer ${pat}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" }, signal: AbortSignal.timeout(10_000),
-  });
+
+  const call = (path: string, init: RequestInit = {}) =>
+    f(`https://api.github.com/repos/${repo}${path ? `/${path}` : ""}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${pat}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+
   try {
     const [, actions, pk, wf] = await Promise.all([
-      call("", { method: "PATCH", body: JSON.stringify({ private: false }) }),
-      call("actions/permissions", { method: "PUT", body: JSON.stringify({ enabled: true }) }),
+      call("", {
+        method: "PATCH",
+        body: JSON.stringify({ private: false }),
+      }),
+      call("actions/permissions", {
+        method: "PUT",
+        body: JSON.stringify({ enabled: true }),
+      }),
       call("actions/secrets/public-key"),
       call(WF_PATH),
     ]);
-    if (![200, 204].includes(actions.status)) return { ok: false, message: `Failed to enable Actions: HTTP ${actions.status}` };
-    if (!pk.ok) return { ok: false, message: `Failed to get repo public key: HTTP ${pk.status}` };
+
+    if (![200, 204].includes(actions.status)) {
+      return {
+        ok: false,
+        message: `Failed to enable Actions: HTTP ${actions.status}`,
+      };
+    }
+
+    if (!pk.ok) {
+      return {
+        ok: false,
+        message: `Failed to get repo public key: HTTP ${pk.status}`,
+      };
+    }
+
     const pkData = (await pk.json()) as { key: string; key_id: string };
     const encrypted = await sealSecret(pkData.key, databaseUrl);
+
     const payload: Record<string, string> = {
       message: `feat: auto-sync every ${formatIntervalLabel(interval)}`,
       content: Buffer.from(buildSyncWorkflowYaml(interval), "utf8").toString("base64"),
     };
-    if (wf.status === 200) { const j = (await wf.json()) as { sha?: string }; if (j.sha) payload.sha = j.sha; }
-    const [secret] = await Promise.all([
-      call("actions/secrets/DATABASE_URL", { method: "PUT", body: JSON.stringify({ encrypted_value: encrypted, key_id: pkData.key_id }) }),
-      call(WF_PATH, { method: "PUT", body: JSON.stringify(payload) }),
+
+    if (wf.status === 200) {
+      const j = (await wf.json()) as { sha?: string };
+      if (j.sha) payload.sha = j.sha;
+    }
+
+    // Create/update the repository secret and the workflow file in parallel.
+    const [secret, workflow] = await Promise.all([
+      call("actions/secrets/DATABASE_URL", {
+        method: "PUT",
+        body: JSON.stringify({
+          encrypted_value: encrypted,
+          key_id: pkData.key_id,
+        }),
+      }),
+      call(WF_PATH, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      }),
     ]);
-    if (![200, 201, 204].includes(secret.status)) return { ok: false, message: `Failed to set DATABASE_URL secret: HTTP ${secret.status}` };
-    void call("dispatches", { method: "POST", body: JSON.stringify({ event_type: "sync-trigger" }) }).catch(() => undefined);
-    return { ok: true, message: `Auto-sync enabled! Workouts will sync every ${formatIntervalLabel(interval)}.` };
+
+    if (![200, 201, 204].includes(secret.status)) {
+      return {
+        ok: false,
+        message: `Failed to set DATABASE_URL secret: HTTP ${secret.status}`,
+      };
+    }
+
+    // IMPORTANT: verify that GitHub really created or updated sync.yml.
+    if (![200, 201].includes(workflow.status)) {
+      const detail = await workflow.text();
+      return {
+        ok: false,
+        message: `Failed to create GitHub workflow: HTTP ${workflow.status} - ${detail}`,
+      };
+    }
+
+    // Trigger the first sync only after both the secret and workflow are confirmed.
+    const dispatch = await call("dispatches", {
+      method: "POST",
+      body: JSON.stringify({ event_type: "sync-trigger" }),
+    });
+
+    if (!dispatch.ok) {
+      return {
+        ok: false,
+        message: `Workflow created, but the first sync could not be triggered: HTTP ${dispatch.status}`,
+      };
+    }
+
+    return {
+      ok: true,
+      message: `Auto-sync enabled! Workouts will sync every ${formatIntervalLabel(interval)}.`,
+    };
   } catch (e) {
-    return { ok: false, message: `Failed to set up auto-sync: ${(e as Error).message}` };
+    return {
+      ok: false,
+      message: `Failed to set up auto-sync: ${(e as Error).message}`,
+    };
   }
 }
 
 /** Disable: delete the workflow file from the fork (best effort, like the Python side). */
 export async function disableGithubActions(opts: { pat: string; repo: string; fetchImpl?: typeof fetch }): Promise<boolean> {
   const f = opts.fetchImpl ?? fetch;
-  const call = (path: string, init: RequestInit = {}) => f(`https://api.github.com/repos/${opts.repo}${path ? `/${path}` : ""}`, {
-    ...init, headers: { Authorization: `Bearer ${opts.pat}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" }, signal: AbortSignal.timeout(10_000),
-  });
+
+  const call = (path: string, init: RequestInit = {}) =>
+    f(`https://api.github.com/repos/${opts.repo}${path ? `/${path}` : ""}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${opts.pat}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+
   try {
     const wf = await call(WF_PATH);
+
     if (wf.status !== 200) return false;
+
     const { sha } = (await wf.json()) as { sha?: string };
-    const del = await call(WF_PATH, { method: "DELETE", body: JSON.stringify({ message: "disable auto-sync", sha }) });
+
+    if (!sha) return false;
+
+    const del = await call(WF_PATH, {
+      method: "DELETE",
+      body: JSON.stringify({
+        message: "disable auto-sync",
+        sha,
+      }),
+    });
+
     return del.ok;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
