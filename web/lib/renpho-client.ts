@@ -30,7 +30,11 @@ export interface RenphoSession {
 }
 
 function getBaseUrl(config: RenphoConfig): string {
-  return (config.apiBaseUrl || RENPHO_API_BASE_URL).replace(/\/+$/, "");
+  let baseUrl = config.apiBaseUrl || RENPHO_API_BASE_URL;
+  while (baseUrl.endsWith("/")) {
+    baseUrl = baseUrl.slice(0, -1);
+  }
+  return baseUrl;
 }
 
 function getAppVersion(config: RenphoConfig): string {
@@ -219,8 +223,7 @@ export async function getRenphoMeasurements(
   userId: number;
   tableName: string;
 }> {
-  // The Renpho Android client sends AES-encrypted empty bytes for device/count,
-  // not an encrypted JSON array such as [].
+  // Renpho sends AES-encrypted empty bytes for device/count, not encrypted [].
   const emptyEncryptedPayload = encryptRenphoBytes(
     Buffer.alloc(0),
     config.encryptionSecret,
