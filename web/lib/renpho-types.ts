@@ -38,7 +38,7 @@ export interface RenphoEncryptedRequest {
   encryptData: string;
 }
 
-export interface RenphoEncryptedResponse<T> {
+export interface RenphoEncryptedResponse {
   code: number;
   msg?: string;
   data?: string | null;

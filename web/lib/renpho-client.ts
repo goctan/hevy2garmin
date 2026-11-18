@@ -29,16 +29,8 @@ export interface RenphoSession {
   expiresAt?: number;
 }
 
-interface RenphoApiEnvelope<T> {
-  code?: number;
-  msg?: string;
-  message?: string;
-  data?: T | string | null;
-  [key: string]: unknown;
-}
-
 function getBaseUrl(config: RenphoConfig): string {
-  return (config.apiBaseUrl || RENPHO_API_BASE_URL).replace(/\/+$/, "");
+  return (config.apiBaseUrl || RENPHO_API_BASE_URL).replace(/\\/+$/, "");
 }
 
 function getAppVersion(config: RenphoConfig): string {
@@ -97,9 +89,9 @@ async function postEncryptedBody<T>(
     );
   }
 
-  let envelope: RenphoEncryptedResponse<unknown>;
+  let envelope: RenphoEncryptedResponse;
   try {
-    envelope = JSON.parse(rawText) as RenphoEncryptedResponse<unknown>;
+    envelope = JSON.parse(rawText) as RenphoEncryptedResponse;
   } catch {
     throw new Error("Renpho returned an invalid JSON response.");
   }
