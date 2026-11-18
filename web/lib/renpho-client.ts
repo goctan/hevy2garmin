@@ -100,7 +100,9 @@ async function postEncryptedBody<T>(
     throw new Error("Renpho returned an invalid JSON response.");
   }
 
-  if (typeof envelope.code === "number" && envelope.code !== 0) {
+  // Renpho's documented/observed success status is 101 (msg: "success").
+  // The previous implementation incorrectly treated every non-zero code as an error.
+  if (typeof envelope.code === "number" && envelope.code !== 101) {
     throw new Error(
       `Renpho API error ${envelope.code}: ${envelope.msg || "Unknown error"}`,
     );
