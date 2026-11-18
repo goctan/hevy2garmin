@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { href: "/workouts", label: "Workouts", icon: "≡" },
   { href: "/routines", label: "Routines", icon: "◱" },
   { href: "/mappings", label: "Mappings", icon: "⇄" },
+  { href: "/renpho", label: "Renpho", icon: "⚖" },
   { href: "/history", label: "History", icon: "◷" },
   { href: "/settings", label: "Settings", icon: "⚙" },
   { href: "/setup", label: "Setup", icon: "⇆" },
@@ -23,7 +24,6 @@ export function NavBar({ authEnabled = false }: { authEnabled?: boolean }) {
   const isActive = (href: string) =>
     pathname === href || pathname.startsWith(href + "/");
 
-  // Hide the whole bar on the login screen.
   if (pathname === "/login") return null;
 
   async function logout() {
@@ -39,7 +39,6 @@ export function NavBar({ authEnabled = false }: { authEnabled?: boolean }) {
 
   return (
     <>
-      {/* Desktop: top bar */}
       <nav className="hidden md:flex items-center justify-between px-6 py-3 bg-surface-elevated border-b border-border sticky top-0 z-40">
         <Link href="/dashboard" className="text-lg font-bold text-text">
           hevy2garmin
@@ -71,7 +70,6 @@ export function NavBar({ authEnabled = false }: { authEnabled?: boolean }) {
         </div>
       </nav>
 
-      {/* Mobile: bottom tab bar */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 flex items-center justify-around bg-surface-elevated border-t border-border py-2 pb-[env(safe-area-inset-bottom)]">
         {NAV_ITEMS.map(({ href, label, icon }) => (
           <Link
