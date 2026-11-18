@@ -1,8 +1,10 @@
+
 name: Sync Workouts
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '0 18 * * *'
+    - cron: '0 19 * * *'
   workflow_dispatch: {}
   repository_dispatch:
     types: [sync-trigger]
@@ -22,7 +24,18 @@ jobs:
           python-version: '3.12'
       - name: Install
         run: pip install ".[cloud]"
+      - name: Check Paris schedule
+        id: paris_time
+        run: |
+          hour="$(TZ=Europe/Paris date +%H)"
+          if [ "$hour" = "20" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Outside 20:00 Europe/Paris; skipping."
+          fi
       - name: Sync
+        if: github.event_name != 'schedule' || steps.paris_time.outputs.run == 'true'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: hevy2garmin sync
