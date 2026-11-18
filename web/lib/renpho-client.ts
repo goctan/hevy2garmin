@@ -30,7 +30,7 @@ export interface RenphoSession {
 }
 
 function getBaseUrl(config: RenphoConfig): string {
-  return (config.apiBaseUrl || RENPHO_API_BASE_URL).replace(/\\/+$/, "");
+  return (config.apiBaseUrl || RENPHO_API_BASE_URL).replace(/\/+$/, "");
 }
 
 function getAppVersion(config: RenphoConfig): string {
