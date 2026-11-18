@@ -15,6 +15,7 @@
  * (dryRun === false). `findExistingActivity` is a READ (the 409-prevention
  * lookup) and is always safe to call.
  */
+import { uploadFit as uploadFitToGarmin } from "hevy2garmin";
 import { getDb } from "./db";
 import { GarminAuth, DBTokenStore, type GarminClient } from "garmin-auth";
 import { resolveDatabaseUrl } from "./database-url";
@@ -62,6 +63,15 @@ export async function getGarminClient(databaseUrl?: string): Promise<GarminClien
   const auth = new GarminAuth({ store });
   cachedClient = await auth.client();
   return cachedClient;
+}
+
+/**
+ * Upload a Renpho Weight Scale FIT file with Hevy2Garmin's existing Garmin
+ * client and upload implementation. No second login or workout activity lookup.
+ */
+export async function uploadRenphoFit(fit: Uint8Array): Promise<void> {
+  const client = await getGarminClient();
+  await uploadFitToGarmin(client, fit);
 }
 
 /** Reset the cached client (test seam / after a token rotation). */
