@@ -2,8 +2,13 @@ import "server-only";
 
 import { createCipheriv, createDecipheriv } from "node:crypto";
 
+type RenphoAlgorithm =
+  | "aes-128-ecb"
+  | "aes-192-ecb"
+  | "aes-256-ecb";
+
 function getAlgorithm(secret: string): {
-  algorithm: "aes-128-ecb" | "aes-192-ecb" | "aes-256-ecb";
+  algorithm: RenphoAlgorithm;
   key: Buffer;
 } {
   if (!secret) {
@@ -19,31 +24,29 @@ function getAlgorithm(secret: string): {
   }
 
   return {
-    algorithm: `aes-${key.length * 8}-ecb` as
-      | "aes-128-ecb"
-      | "aes-192-ecb"
-      | "aes-256-ecb",
+    algorithm: `aes-${key.length * 8}-ecb` as RenphoAlgorithm,
     key,
   };
 }
 
-/**
- * Renpho uses AES in ECB mode with PKCS7 padding and Base64 transport.
- * Keep this module server-only: the encryption secret must never reach a browser.
- */
-export function encryptRenpho(plainText: string, secret: string): string {
-  if (!plainText) {
-    throw new Error("Cannot encrypt an empty Renpho payload.");
-  }
-
+/** AES-ECB with PKCS7 padding, returning Base64. Supports empty input. */
+export function encryptRenphoBytes(
+  plainBytes: Buffer,
+  secret: string,
+): string {
   const { algorithm, key } = getAlgorithm(secret);
   const cipher = createCipheriv(algorithm, key, null);
   cipher.setAutoPadding(true);
 
   return Buffer.concat([
-    cipher.update(plainText, "utf8"),
+    cipher.update(plainBytes),
     cipher.final(),
   ]).toString("base64");
+}
+
+/** Renpho uses AES-ECB / PKCS7 with Base64 transport. */
+export function encryptRenpho(plainText: string, secret: string): string {
+  return encryptRenphoBytes(Buffer.from(plainText, "utf8"), secret);
 }
 
 export function decryptRenpho(
