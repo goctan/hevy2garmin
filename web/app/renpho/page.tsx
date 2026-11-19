@@ -57,7 +57,7 @@ export default function RenphoPage() {
       <header className="mb-6">
         <h1 className="text-2xl font-bold text-text">Renpho → Garmin</h1>
         <p className="mt-2 text-sm text-text-secondary">
-          Vérification de l'historique Renpho. Aucun envoi vers Garmin ne sera effectué.
+          Vérification de l&apos;historique Renpho. Aucun envoi vers Garmin ne sera effectué.
         </p>
       </header>
 
