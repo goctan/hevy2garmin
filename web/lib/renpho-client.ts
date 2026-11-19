@@ -156,7 +156,7 @@ export async function loginRenpho(
       password: config.password,
       areaCode: "US",
       appRevision: appVersion,
-      cellphoneType: "Android",
+      cellphoneType: "GarminRenphoSync",
       systemType: "11",
       email: config.username,
       platform,
