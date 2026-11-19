@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
 import { getDb } from "@/lib/db";
 import { verifySession, SESSION_COOKIE, authEnabled } from "@/lib/auth";
@@ -10,11 +11,25 @@ import { uploadRenphoFit } from "@/lib/garmin-upload";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const START_DATE = "2026-11-18";
+const START_DATE = "2026-11-18"; // Inclusive, Europe/Paris calendar date.
 const TIME_ZONE = "Europe/Paris";
 
-async function isAuthorized(): Promise<boolean> {
+function hasValidAutomationToken(request: Request): boolean {
+  const expected = process.env.RENPHO_SYNC_TOKEN;
+  const authorization = request.headers.get("authorization") ?? "";
+  const provided = authorization.match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
+  if (!expected || !provided) return false;
+
+  const expectedBuffer = Buffer.from(expected);
+  const providedBuffer = Buffer.from(provided);
+  return expectedBuffer.length === providedBuffer.length &&
+    timingSafeEqual(expectedBuffer, providedBuffer);
+}
+
+async function isAuthorized(request: Request): Promise<boolean> {
   if (!authEnabled()) return true;
+  if (hasValidAutomationToken(request)) return true;
+
   const store = await cookies();
   return verifySession(store.get(SESSION_COOKIE)?.value ?? null);
 }
@@ -28,7 +43,10 @@ function measurementKey(userId: string, measurement: RenphoMeasurement): string 
 
 function parisDay(timestamp: number): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit",
+    timeZone: TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
   }).formatToParts(new Date(timestamp * 1000));
   const part = (type: string) => parts.find(p => p.type === type)?.value ?? "";
   return `${part("year")}-${part("month")}-${part("day")}`;
@@ -46,31 +64,15 @@ function latestMeasurementPerDay(measurements: RenphoMeasurement[]): RenphoMeasu
   return [...latestByDay.values()].sort((a, b) => (a.timeStamp ?? 0) - (b.timeStamp ?? 0));
 }
 
-function previewMeasurement(m: RenphoMeasurement) {
-  return {
-    date: new Date((m.timeStamp as number) * 1000).toISOString(),
-    weight: m.weight,
-    weightUnit: m.weightUnit ?? 1,
-    bodyFatPercent: m.bodyfat ?? null,
-    waterPercent: m.water ?? null,
-    musclePercent: m.muscle ?? null,
-    boneMassKg: m.bone ?? null,
-    visceralFat: m.visfat ?? null,
-    metabolicAge: m.bodyage ?? null,
-    basalMetabolismKcal: m.bmr ?? null,
-    bmi: m.bmi ?? null,
-    heartRateBpm: m.heartRate ?? null,
-    proteinPercent: m.protein ?? null,
-    fatFreeMassKg: m.fatFreeWeight ?? null,
-  };
-}
-
 export async function POST(request: Request) {
-  if (!(await isAuthorized())) return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+  if (!(await isAuthorized(request))) return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
 
   let body: { username?: unknown; password?: unknown; live?: unknown };
-  try { body = await request.json(); }
-  catch { return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 }); }
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
+  }
 
   const username = typeof body.username === "string" ? body.username.trim() : "";
   const password = typeof body.password === "string" ? body.password : "";
@@ -95,6 +97,11 @@ export async function POST(request: Request) {
     const measurements = latestMeasurementPerDay(result.measurements);
 
     if (!live) {
+      const preview = measurements.slice(-10).reverse().map(m => ({
+        date: new Date((m.timeStamp as number) * 1000).toISOString(),
+        weight: m.weight,
+        weightUnit: m.weightUnit ?? 1,
+      }));
       return NextResponse.json({
         ok: true,
         dryRun: true,
@@ -103,7 +110,7 @@ export async function POST(request: Request) {
         startDate: START_DATE,
         oldestDate: measurements.length ? new Date((measurements[0].timeStamp as number) * 1000).toISOString() : null,
         newestDate: measurements.length ? new Date((measurements[measurements.length - 1].timeStamp as number) * 1000).toISOString() : null,
-        preview: measurements.slice(-10).reverse().map(previewMeasurement),
+        preview,
         message: `Une seule mesure par jour (la dernière), à partir du ${START_DATE}. Aucun envoi effectué.`,
       });
     }
@@ -111,12 +118,17 @@ export async function POST(request: Request) {
     let uploaded = 0, skipped = 0, failed = 0;
     for (const measurement of measurements) {
       let key: string;
-      try { key = measurementKey(result.userId, measurement); }
-      catch { failed++; continue; }
-
+      try {
+        key = measurementKey(result.userId, measurement);
+      } catch {
+        failed++;
+        continue;
+      }
       const claim = await sql`INSERT INTO renpho_synced_measurements (measurement_key, renpho_user_id, renpho_measurement_id, measured_at, status) VALUES (${key}, ${result.userId}, ${String(measurement.id)}, ${new Date((measurement.timeStamp ?? 0) * 1000)}, 'pending') ON CONFLICT (measurement_key) DO NOTHING RETURNING measurement_key`;
-      if (claim.length === 0) { skipped++; continue; }
-
+      if (claim.length === 0) {
+        skipped++;
+        continue;
+      }
       try {
         const fit = generateRenphoFit(measurement);
         await uploadRenphoFit(fit);
@@ -128,9 +140,15 @@ export async function POST(request: Request) {
       }
     }
     return NextResponse.json({
-      ok: failed === 0, dryRun: false, found: result.measurements.length,
-      valid: measurements.length, uploaded, skipped, failed, startDate: START_DATE,
-      note: "Une seule mesure par jour (la dernière), à partir du 18 novembre 2026.",
+      ok: failed === 0,
+      dryRun: false,
+      found: result.measurements.length,
+      valid: measurements.length,
+      uploaded,
+      skipped,
+      failed,
+      startDate: START_DATE,
+      note: "Une seule mesure par jour (la dernière), à partir du 18 novembre 2026. Les entrées pending ne sont jamais renvoyées automatiquement afin d'éviter les doublons Garmin.",
     });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
