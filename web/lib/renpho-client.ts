@@ -100,9 +100,7 @@ async function postEncryptedBody<T>(
     throw new Error("Renpho returned an invalid JSON response.");
   }
 
-  // Renpho's documented/observed success status is 101 (msg: "success").
-  // The previous implementation incorrectly treated every non-zero code as an error.
-  if (typeof envelope.code === "number" && envelope.code !== 101) {
+  if (typeof envelope.code === "number" && envelope.code !== 0) {
     throw new Error(
       `Renpho API error ${envelope.code}: ${envelope.msg || "Unknown error"}`,
     );
@@ -225,7 +223,7 @@ export async function getRenphoMeasurements(
   userId: number;
   tableName: string;
 }> {
-  // Renpho sends AES-encrypted empty bytes for device/count, not encrypted [].
+  // Match the reference Renpho CLI: encrypted empty bytes for device/count.
   const emptyEncryptedPayload = encryptRenphoBytes(
     Buffer.alloc(0),
     config.encryptionSecret,
@@ -241,51 +239,101 @@ export async function getRenphoMeasurements(
   );
 
   const scales = Array.isArray(deviceInfo.scale) ? deviceInfo.scale : [];
-  const scale = scales.find((item) => item && item.tableName) || scales[0];
-
-  if (!scale?.tableName) {
-    throw new Error("Renpho did not return a scale table name for this account.");
+  if (scales.length === 0) {
+    throw new Error("Renpho returned no scale devices for this account.");
   }
 
-  const userId = scale.userIds?.[0] ?? session.userId;
-  const measurements: RenphoMeasurement[] = [];
-  const pageSize = RENPHO_MEASUREMENT_PAGE_SIZE;
-  const maxPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  // The CLI checks every scale and only queries scales explicitly associated
+  // with the logged-in user. It does not blindly use the first scale/user ID.
+  const userScales = scales.filter(
+    (scale) =>
+      typeof scale?.tableName === "string" &&
+      scale.tableName.length > 0 &&
+      Array.isArray(scale.userIds) &&
+      scale.userIds.some((id) => Number(id) === session.userId),
+  );
 
-  for (let pageNum = 1; pageNum <= maxPages; pageNum += 1) {
-    const page = await postEncrypted<unknown>(
-      config,
-      RENPHO_ENDPOINTS.measurements,
-      {
-        pageNum,
-        pageSize,
-        userIds: [String(userId)],
-        tableName: scale.tableName,
-      },
-      session,
+  if (userScales.length === 0) {
+    throw new Error(
+      "Renpho found scale devices, but none are associated with the logged-in account. Check the selected Renpho profile.",
     );
+  }
 
-    const pageRecord = asRecord(page);
-    const pageItems = Array.isArray(page)
-      ? page
-      : Array.isArray(pageRecord.list)
-        ? pageRecord.list
-        : Array.isArray(pageRecord.records)
-          ? pageRecord.records
-          : Array.isArray(pageRecord.data)
-            ? pageRecord.data
-            : [];
+  const allMeasurements: RenphoMeasurement[] = [];
+  let firstTableName = "";
 
-    if (pageItems.length === 0) break;
+  for (const scale of userScales) {
+    firstTableName ||= scale.tableName!;
+    const requestedCount =
+      typeof scale.count === "number" && scale.count > 0
+        ? Math.min(scale.count, totalCount)
+        : totalCount;
 
-    measurements.push(...(pageItems as RenphoMeasurement[]));
+    const pageSize = RENPHO_MEASUREMENT_PAGE_SIZE;
+    const maxPages = Math.max(1, Math.ceil(requestedCount / pageSize));
 
-    if (measurements.length >= totalCount || pageItems.length < pageSize) break;
+    for (let pageNum = 1; pageNum <= maxPages; pageNum += 1) {
+      const page = await postEncrypted<unknown>(
+        config,
+        RENPHO_ENDPOINTS.measurements,
+        {
+          pageNum,
+          pageSize,
+          userIds: [String(session.userId)],
+          tableName: scale.tableName,
+        },
+        session,
+      );
+
+      // The reference CLI decrypts this endpoint directly as an array.
+      // Keep object wrappers as compatibility fallbacks.
+      const pageRecord = asRecord(page);
+      const pageItems = Array.isArray(page)
+        ? page
+        : Array.isArray(pageRecord.list)
+          ? pageRecord.list
+          : Array.isArray(pageRecord.records)
+            ? pageRecord.records
+            : Array.isArray(pageRecord.data)
+              ? pageRecord.data
+              : [];
+
+      if (pageItems.length === 0) break;
+
+      for (const item of pageItems) {
+        const measurement = item as RenphoMeasurement;
+        const ownerId = readNumber(
+          asRecord(measurement),
+          "userId",
+          "bUserId",
+        );
+        // The CLI explicitly filters returned measurements by bUserId.
+        if (ownerId === session.userId) {
+          allMeasurements.push(measurement);
+        }
+      }
+
+      if (
+        allMeasurements.length >= requestedCount ||
+        pageItems.length < pageSize
+      ) {
+        break;
+      }
+    }
+  }
+
+  const unique = new Map<string, RenphoMeasurement>();
+  for (const measurement of allMeasurements) {
+    if (measurement.id !== null && measurement.id !== undefined) {
+      unique.set(String(measurement.id), measurement);
+    }
   }
 
   return {
-    measurements: measurements.slice(0, totalCount),
-    userId,
-    tableName: scale.tableName,
+    measurements: [...unique.values()].sort(
+      (a, b) => (b.timeStamp ?? 0) - (a.timeStamp ?? 0),
+    ),
+    userId: session.userId,
+    tableName: firstTableName,
   };
 }
