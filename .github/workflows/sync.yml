@@ -36,41 +36,48 @@ jobs:
       - name: Sync workouts
         if: github.event_name != 'schedule' || steps.paris_time.outputs.run == 'true'
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: \${{ secrets.DATABASE_URL }}
         run: hevy2garmin sync
 
   sync-weight:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Check required secrets
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
-          RENPHO_USERNAME: ${{ secrets.RENPHO_USERNAME }}
-          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
-          RENPHO_ENCRYPTION_SECRET: ${{ secrets.RENPHO_ENCRYPTION_SECRET }}
+      - name: Check Paris schedule
+        id: paris_time
         run: |
-          test -n "$DATABASE_URL$POSTGRES_URL" || { echo "::error::Missing DATABASE_URL or POSTGRES_URL secret"; exit 1; }
+          hour="$(TZ=Europe/Paris date +%H)"
+          if [ "$hour" = "20" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Outside 20:00 Europe/Paris; skipping."
+          fi
+      - name: Check required secrets
+        if: github.event_name != 'schedule' || steps.paris_time.outputs.run == 'true'
+        env:
+          RENPHO_USERNAME: \${{ secrets.RENPHO_USERNAME }}
+          RENPHO_PASSWORD: \${{ secrets.RENPHO_PASSWORD }}
+          RENPHO_SYNC_TOKEN: \${{ secrets.RENPHO_SYNC_TOKEN }}
+        run: |
           test -n "$RENPHO_USERNAME" || { echo "::error::Missing RENPHO_USERNAME secret"; exit 1; }
           test -n "$RENPHO_PASSWORD" || { echo "::error::Missing RENPHO_PASSWORD secret"; exit 1; }
-          test -n "$RENPHO_ENCRYPTION_SECRET" || { echo "::error::Missing RENPHO_ENCRYPTION_SECRET secret"; exit 1; }
-      - name: Install web dependencies
-        working-directory: web
-        run: npm ci
-      - name: Sync Renpho weight to Garmin
-        working-directory: web
+          test -n "$RENPHO_SYNC_TOKEN" || { echo "::error::Missing RENPHO_SYNC_TOKEN secret"; exit 1; }
+      - name: Sync Renpho measurements to Garmin
+        if: github.event_name != 'schedule' || steps.paris_time.outputs.run == 'true'
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
-          RENPHO_USERNAME: ${{ secrets.RENPHO_USERNAME }}
-          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
-          RENPHO_ENCRYPTION_SECRET: ${{ secrets.RENPHO_ENCRYPTION_SECRET }}
-          NODE_OPTIONS: --conditions=react-server
-        run: npx --yes tsx@4.19.2 scripts/sync-renpho.ts
+          RENPHO_USERNAME: \${{ secrets.RENPHO_USERNAME }}
+          RENPHO_PASSWORD: \${{ secrets.RENPHO_PASSWORD }}
+          RENPHO_SYNC_TOKEN: \${{ secrets.RENPHO_SYNC_TOKEN }}
+        run: |
+          response="$(curl --silent --show-error --fail-with-body \
+            --request POST \
+            --url "https://hevy2garmin-goctan.vercel.app/api/renpho-sync" \
+            --header "Authorization: Bearer \${RENPHO_SYNC_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "$(jq -n \
+              --arg username "$RENPHO_USERNAME" \
+              --arg password "$RENPHO_PASSWORD" \
+              '{username: $username, password: $password, live: true}')")"
+          echo "$response" | jq .
+          echo "$response" | jq -e '.ok == true and .dryRun == false' >/dev/null
