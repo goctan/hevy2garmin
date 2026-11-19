@@ -8,7 +8,7 @@ import {
   RENPHO_MEASUREMENT_PAGE_SIZE,
 } from "./renpho-api-endpoints";
 import {
-  decryptRenphoJson,
+  decryptRenpho,
   encryptRenphoBytes,
   encryptRenphoJson,
 } from "./renpho-crypto";
@@ -25,7 +25,7 @@ import type {
 export interface RenphoSession {
   user: RenphoUser;
   token: string;
-  userId: number;
+  userId: string;
   expiresAt?: number;
 }
 
@@ -110,7 +110,54 @@ async function postEncryptedBody<T>(
     throw new Error("Renpho response did not contain encrypted data.");
   }
 
-  return decryptRenphoJson<T>(envelope.data, config.encryptionSecret);
+  // Preserve large integer IDs before JSON.parse; Number would round them.
+  const plaintext = decryptRenpho(envelope.data, config.encryptionSecret);
+  return parseJsonPreservingLargeIntegers<T>(plaintext);
+}
+
+
+function parseJsonPreservingLargeIntegers<T>(json: string): T {
+  let output = "";
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < json.length;) {
+    const char = json[i];
+    if (inString) {
+      output += char;
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      i++;
+      continue;
+    }
+    if (char === '"') { inString = true; output += char; i++; continue; }
+    if (char === '-' || (char >= '0' && char <= '9')) {
+      const match = json.slice(i).match(/^-?\d+/);
+      if (match) {
+        const token = match[0];
+        const end = i + token.length;
+        const next = json[end] ?? "";
+        if (!".eE".includes(next) && BigInt(token) > BigInt(Number.MAX_SAFE_INTEGER) ||
+            (!".eE".includes(next) && BigInt(token) < BigInt(Number.MIN_SAFE_INTEGER))) {
+          output += JSON.stringify(token);
+        } else output += token;
+        i = end;
+        continue;
+      }
+    }
+    output += char;
+    i++;
+  }
+  return JSON.parse(output) as T;
+}
+
+function readIdentifier(record: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
+  }
+  return undefined;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -174,7 +221,7 @@ export async function loginRenpho(
     ),
   );
   const login = asRecord(result.login ?? result.user ?? result);
-  const userId = readNumber(login, "userId", "id", "uid");
+  const userId = readIdentifier(login, "userId", "id", "uid");
   const token = readString(login, "token", "accessToken");
 
   if (!userId || !token) {
@@ -220,7 +267,7 @@ export async function getRenphoMeasurements(
   totalCount = 500,
 ): Promise<{
   measurements: RenphoMeasurement[];
-  userId: number;
+  userId: string;
   tableName: string;
 }> {
   // Match the reference Renpho CLI: encrypted empty bytes for device/count.
@@ -260,7 +307,7 @@ export async function getRenphoMeasurements(
       typeof scale?.tableName === "string" &&
       scale.tableName.length > 0 &&
       Array.isArray(scale.userIds) &&
-      scale.userIds.some((id: string | number) => Number(id) === session.userId),
+      scale.userIds.some((id: string | number) => String(id) === session.userId),
   );
 
   console.info("[Renpho diagnostic] Matching scales", {
@@ -322,7 +369,7 @@ export async function getRenphoMeasurements(
         returnedCount: pageItems.length,
         sampleKeys: pageItems.length > 0 ? Object.keys(asRecord(pageItems[0])) : [],
         sampleOwnerId: pageItems.length > 0
-          ? readNumber(asRecord(pageItems[0]), "userId", "bUserId") ?? null
+          ? readIdentifier(asRecord(pageItems[0]), "userId", "bUserId") ?? null
           : null,
       });
       if (pageItems.length === 0) break;
@@ -330,7 +377,7 @@ export async function getRenphoMeasurements(
       let matchingOwnerCount = 0;
       for (const item of pageItems) {
         const measurement = item as RenphoMeasurement;
-        const ownerId = readNumber(
+        const ownerId = readIdentifier(
           asRecord(measurement),
           "userId",
           "bUserId",
