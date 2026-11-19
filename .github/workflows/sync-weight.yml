@@ -1,0 +1,44 @@
+name: Sync Weight
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-weight
+  cancel-in-progress: false
+
+jobs:
+  sync-weight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check required secrets
+        env:
+          RENPHO_USERNAME: ${{ secrets.RENPHO_USERNAME }}
+          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
+          RENPHO_SYNC_TOKEN: ${{ secrets.RENPHO_SYNC_TOKEN }}
+        run: |
+          test -n "$RENPHO_USERNAME" || { echo "::error::Missing RENPHO_USERNAME secret"; exit 1; }
+          test -n "$RENPHO_PASSWORD" || { echo "::error::Missing RENPHO_PASSWORD secret"; exit 1; }
+          test -n "$RENPHO_SYNC_TOKEN" || { echo "::error::Missing RENPHO_SYNC_TOKEN secret"; exit 1; }
+
+      - name: Sync Renpho measurements to Garmin
+        env:
+          RENPHO_USERNAME: ${{ secrets.RENPHO_USERNAME }}
+          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
+          RENPHO_SYNC_TOKEN: ${{ secrets.RENPHO_SYNC_TOKEN }}
+        run: |
+          response="$(curl --silent --show-error --fail-with-body \
+            --request POST \
+            --url "https://hevy2garmin-goctan.vercel.app/api/renpho-sync" \
+            --header "Authorization: Bearer ${RENPHO_SYNC_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "$(jq -n \
+              --arg username "$RENPHO_USERNAME" \
+              --arg password "$RENPHO_PASSWORD" \
+              '{username: $username, password: $password, live: true}')")"
+          echo "$response" | jq .
+          echo "$response" | jq -e '.ok == true and .dryRun == false' >/dev/null
