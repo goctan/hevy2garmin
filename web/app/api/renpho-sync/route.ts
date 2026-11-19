@@ -10,6 +10,9 @@ import { uploadRenphoFit } from "@/lib/garmin-upload";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+const START_DATE = "2026-11-18"; // Inclusive, Europe/Paris calendar date.
+const TIME_ZONE = "Europe/Paris";
+
 async function isAuthorized(): Promise<boolean> {
   if (!authEnabled()) return true;
   const store = await cookies();
@@ -21,6 +24,30 @@ function measurementKey(userId: string, measurement: RenphoMeasurement): string 
     throw new Error("Renpho returned a measurement without an ID; refusing an unsafe upload.");
   }
   return `${userId}:${measurement.id}`;
+}
+
+function parisDay(timestamp: number): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(timestamp * 1000));
+  const part = (type: string) => parts.find(p => p.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function latestMeasurementPerDay(measurements: RenphoMeasurement[]): RenphoMeasurement[] {
+  const latestByDay = new Map<string, RenphoMeasurement>();
+  for (const measurement of [...measurements].sort((a, b) => (a.timeStamp ?? 0) - (b.timeStamp ?? 0))) {
+    if (typeof measurement.weight !== "number" || measurement.weight <= 0 ||
+        typeof measurement.timeStamp !== "number" || measurement.timeStamp <= 0) continue;
+    const day = parisDay(measurement.timeStamp);
+    if (day < START_DATE) continue;
+    // Sorted ascending: replacing the entry keeps only the final weighing of that day.
+    latestByDay.set(day, measurement);
+  }
+  return [...latestByDay.values()].sort((a, b) => (a.timeStamp ?? 0) - (b.timeStamp ?? 0));
 }
 
 export async function POST(request: Request) {
@@ -53,9 +80,7 @@ export async function POST(request: Request) {
     const config: RenphoConfig = { username, password, encryptionSecret };
     const session = await loginRenpho(config);
     const result = await getRenphoMeasurements(config, session);
-    const measurements = result.measurements
-      .filter(m => typeof m.weight === "number" && m.weight > 0 && typeof m.timeStamp === "number" && m.timeStamp > 0)
-      .sort((a, b) => (a.timeStamp ?? 0) - (b.timeStamp ?? 0));
+    const measurements = latestMeasurementPerDay(result.measurements);
 
     if (!live) {
       const preview = measurements.slice(-10).reverse().map(m => ({
@@ -68,10 +93,11 @@ export async function POST(request: Request) {
         dryRun: true,
         found: result.measurements.length,
         valid: measurements.length,
+        startDate: START_DATE,
         oldestDate: measurements.length ? new Date((measurements[0].timeStamp as number) * 1000).toISOString() : null,
         newestDate: measurements.length ? new Date((measurements[measurements.length - 1].timeStamp as number) * 1000).toISOString() : null,
         preview,
-        message: "Aucun envoi effectué. Vérifiez l'historique avant toute synchronisation.",
+        message: `Une seule mesure par jour (la dernière), à partir du ${START_DATE}. Aucun envoi effectué.`,
       });
     }
 
@@ -107,7 +133,8 @@ export async function POST(request: Request) {
       uploaded,
       skipped,
       failed,
-      note: "Les entrées pending ne sont jamais renvoyées automatiquement afin d'éviter les doublons Garmin.",
+      startDate: START_DATE,
+      note: "Une seule mesure par jour (la dernière), à partir du 18 novembre 2026. Les entrées pending ne sont jamais renvoyées automatiquement afin d'éviter les doublons Garmin.",
     });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
