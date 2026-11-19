@@ -1,5 +1,4 @@
-
-name: Sync Workouts
+name: Sync Workouts and Weight
 
 on:
   schedule:
@@ -14,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  sync:
+  sync-workouts:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -34,8 +33,44 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "Outside 20:00 Europe/Paris; skipping."
           fi
-      - name: Sync
+      - name: Sync workouts
         if: github.event_name != 'schedule' || steps.paris_time.outputs.run == 'true'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: hevy2garmin sync
+
+  sync-weight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Check required secrets
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          RENPHO_USERNAME: ${{ secrets.RENPHO_USERNAME }}
+          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
+          RENPHO_ENCRYPTION_SECRET: ${{ secrets.RENPHO_ENCRYPTION_SECRET }}
+        run: |
+          test -n "$DATABASE_URL$POSTGRES_URL" || { echo "::error::Missing DATABASE_URL or POSTGRES_URL secret"; exit 1; }
+          test -n "$RENPHO_USERNAME" || { echo "::error::Missing RENPHO_USERNAME secret"; exit 1; }
+          test -n "$RENPHO_PASSWORD" || { echo "::error::Missing RENPHO_PASSWORD secret"; exit 1; }
+          test -n "$RENPHO_ENCRYPTION_SECRET" || { echo "::error::Missing RENPHO_ENCRYPTION_SECRET secret"; exit 1; }
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+      - name: Sync Renpho weight to Garmin
+        working-directory: web
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          RENPHO_USERNAME: ${{ secrets.RENPHO_USERNAME }}
+          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
+          RENPHO_ENCRYPTION_SECRET: ${{ secrets.RENPHO_ENCRYPTION_SECRET }}
+          NODE_OPTIONS: --conditions=react-server
+        run: npx --yes tsx@4.19.2 scripts/sync-renpho.ts
