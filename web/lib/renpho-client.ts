@@ -100,7 +100,7 @@ async function postEncryptedBody<T>(
     throw new Error("Renpho returned an invalid JSON response.");
   }
 
-  if (typeof envelope.code === "number" && envelope.code !== 0) {
+  if (typeof envelope.code === "number" && envelope.code !== 0 && envelope.code !== 101) {
     throw new Error(
       `Renpho API error ${envelope.code}: ${envelope.msg || "Unknown error"}`,
     );
@@ -250,7 +250,7 @@ export async function getRenphoMeasurements(
       typeof scale?.tableName === "string" &&
       scale.tableName.length > 0 &&
       Array.isArray(scale.userIds) &&
-      scale.userIds.some((id) => Number(id) === session.userId),
+      scale.userIds.some((id: string | number) => Number(id) === session.userId),
   );
 
   if (userScales.length === 0) {
