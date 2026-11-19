@@ -239,6 +239,16 @@ export async function getRenphoMeasurements(
   );
 
   const scales = Array.isArray(deviceInfo.scale) ? deviceInfo.scale : [];
+  console.info("[Renpho diagnostic] Device response", {
+    topLevelKeys: Object.keys(deviceInfo),
+    scaleCount: scales.length,
+    scales: scales.map((scale) => ({
+      tableName: scale?.tableName ?? null,
+      count: scale?.count ?? null,
+      userIds: Array.isArray(scale?.userIds) ? scale.userIds : null,
+    })),
+    loggedInUserId: session.userId,
+  });
   if (scales.length === 0) {
     throw new Error("Renpho returned no scale devices for this account.");
   }
@@ -253,6 +263,10 @@ export async function getRenphoMeasurements(
       scale.userIds.some((id: string | number) => Number(id) === session.userId),
   );
 
+  console.info("[Renpho diagnostic] Matching scales", {
+    matchingScaleCount: userScales.length,
+    totalScaleCount: scales.length,
+  });
   if (userScales.length === 0) {
     throw new Error(
       "Renpho found scale devices, but none are associated with the logged-in account. Check the selected Renpho profile.",
@@ -298,8 +312,22 @@ export async function getRenphoMeasurements(
               ? pageRecord.data
               : [];
 
+      console.info("[Renpho diagnostic] Measurement page", {
+        tableName: scale.tableName,
+        pageNum,
+        requestedCount,
+        pageSize,
+        responseType: Array.isArray(page) ? "array" : typeof page,
+        responseKeys: Array.isArray(page) ? [] : Object.keys(pageRecord),
+        returnedCount: pageItems.length,
+        sampleKeys: pageItems.length > 0 ? Object.keys(asRecord(pageItems[0])) : [],
+        sampleOwnerId: pageItems.length > 0
+          ? readNumber(asRecord(pageItems[0]), "userId", "bUserId") ?? null
+          : null,
+      });
       if (pageItems.length === 0) break;
 
+      let matchingOwnerCount = 0;
       for (const item of pageItems) {
         const measurement = item as RenphoMeasurement;
         const ownerId = readNumber(
@@ -309,9 +337,17 @@ export async function getRenphoMeasurements(
         );
         // The CLI explicitly filters returned measurements by bUserId.
         if (ownerId === session.userId) {
+          matchingOwnerCount += 1;
           allMeasurements.push(measurement);
         }
       }
+
+      console.info("[Renpho diagnostic] Page ownership filter", {
+        tableName: scale.tableName,
+        pageNum,
+        matchingOwnerCount,
+        accumulatedCount: allMeasurements.length,
+      });
 
       if (
         allMeasurements.length >= requestedCount ||
@@ -322,6 +358,9 @@ export async function getRenphoMeasurements(
     }
   }
 
+  console.info("[Renpho diagnostic] Measurements before deduplication", {
+    count: allMeasurements.length,
+  });
   const unique = new Map<string, RenphoMeasurement>();
   for (const measurement of allMeasurements) {
     if (measurement.id !== null && measurement.id !== undefined) {
@@ -329,6 +368,10 @@ export async function getRenphoMeasurements(
     }
   }
 
+  console.info("[Renpho diagnostic] Final measurement count", {
+    count: unique.size,
+    tableName: firstTableName,
+  });
   return {
     measurements: [...unique.values()].sort(
       (a, b) => (b.timeStamp ?? 0) - (a.timeStamp ?? 0),
